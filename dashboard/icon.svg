@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#080c10"/>
+  <rect x="40" y="40" width="432" height="432" rx="80" fill="#0d1318"/>
+  <rect x="40" y="40" width="432" height="6" rx="3" fill="#00e5a0"/>
+  <!-- ORB text -->
+  <text x="256" y="220" font-family="Arial" font-weight="800" font-size="120" fill="#00e5a0" text-anchor="middle" letter-spacing="-4">ORB</text>
+  <text x="256" y="300" font-family="Arial" font-weight="400" font-size="48" fill="#5a7080" text-anchor="middle" letter-spacing="8">TRADER</text>
+  <!-- Chart line decoration -->
+  <polyline points="80,380 130,360 180,370 230,340 280,310 330,290 380,260 430,240" stroke="#00e5a0" stroke-width="4" fill="none" opacity="0.4"/>
+  <circle cx="280" cy="310" r="8" fill="#00e5a0" opacity="0.8"/>
+</svg>
