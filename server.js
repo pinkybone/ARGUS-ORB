@@ -53,6 +53,7 @@ app.get("/health", async (req, res) => {
     trading_enabled: settings.isTradingEnabled(),
     dual_leg_live: settings.isDualLegLive(),
     cross_entry_enabled: settings.isCrossEntryEnabled(),
+    buy_enabled: settings.getBuyEnabled(),
     webhook_queue: webhookQueue.summary().counts,
     token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
@@ -107,6 +108,7 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.trading_enabled = settings.isTradingEnabled();
   s.dual_leg_live = settings.isDualLegLive();
   s.cross_entry_enabled = settings.isCrossEntryEnabled();
+  s.buy_enabled = settings.getBuyEnabled();
   s.webhook_queue = webhookQueue.summary();
   res.json(s);
 });
@@ -116,10 +118,17 @@ app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
     var body = req.body || {};
     if (body.dual_leg_live !== undefined) settings.setDualLegLive(!!body.dual_leg_live);
     if (body.cross_entry_enabled !== undefined) settings.setCrossEntryEnabled(!!body.cross_entry_enabled);
+    if (body.buy_enabled && typeof body.buy_enabled === "object") {
+      settings.setBuyEnabledMap(body.buy_enabled);
+    }
+    if (body.buy_ticker && body.buy_enabled_value !== undefined) {
+      settings.setBuyEnabled(body.buy_ticker, body.buy_enabled_value);
+    }
     res.json({
       ok: true,
       dual_leg_live: settings.isDualLegLive(),
       cross_entry_enabled: settings.isCrossEntryEnabled(),
+      buy_enabled: settings.getBuyEnabled(),
       durable: settings.getAll().durable
     });
   } catch (e) {
@@ -180,7 +189,8 @@ app.post("/api/trade-config", authguard.requireSecret, (req, res) => {
     if (spy.contracts !== undefined || iwm.contracts !== undefined) {
       setContractSize(
         spy.contracts !== undefined ? spy.contracts : getState().contracts.SPY,
-        iwm.contracts !== undefined ? iwm.contracts : getState().contracts.IWM
+        iwm.contracts !== undefined ? iwm.contracts : getState().contracts.IWM,
+        spy.contracts !== undefined ? spy.contracts : undefined // SPX mirrors SPY when SPY size changes
       );
     }
     if (spy.dte !== undefined) settings.setDTE("SPY", spy.dte);
@@ -341,12 +351,96 @@ app.post("/api/sms", authguard.requireSecret, async (req, res) => {
 
 app.post("/api/contracts", authguard.requireSecret, (req, res) => {
   try {
-    const { spy, iwm } = req.body;
+    const { spy, iwm, spx } = req.body || {};
     if (!spy || !iwm) return res.status(400).json({ error: "spy and iwm required" });
-    setContractSize(spy, iwm);
+    setContractSize(spy, iwm, spx);
     res.json({ ok: true, contracts: getState().contracts });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Full-port: max whole contracts from available buying power (SPY / IWM / SPX).
+// Optional crossEntry flag toggles IWM→SPY cross and reserves BP when full-porting IWM.
+app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
+  try {
+    var ticker = String((req.body && req.body.ticker) || "").toUpperCase();
+    if (ticker !== "SPY" && ticker !== "IWM" && ticker !== "SPX") {
+      return res.status(400).json({ ok: false, error: "ticker must be SPY, IWM, or SPX" });
+    }
+
+    if (req.body && req.body.crossEntry !== undefined) {
+      settings.setCrossEntryEnabled(!!req.body.crossEntry);
+    }
+    var crossEntry = settings.isCrossEntryEnabled();
+
+    var bp = null;
+    var token = rh.getToken();
+    var acct = process.env.RH_ACCOUNT_NUMBER;
+    if (token && acct) {
+      var status = await rh.checkAuthStatus();
+      if (status.ok) {
+        var body = await new Promise(function(resolve) {
+          var opts = {
+            hostname: "api.robinhood.com",
+            path: "/accounts/" + acct + "/",
+            headers: {
+              "Authorization": "Bearer " + token,
+              "Accept": "application/json",
+              "X-Robinhood-API-Version": "1.431.4",
+              "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
+            }
+          };
+          var req3 = https.request(opts, function(r) {
+            var raw = ""; r.on("data", function(c) { raw += c; });
+            r.on("end", function() { try { resolve(JSON.parse(raw)); } catch (e) { resolve({}); } });
+          });
+          req3.on("error", function() { resolve({}); });
+          req3.end();
+        });
+        bp = parseFloat(body.buying_power || body.cash || 0) || null;
+      }
+    }
+    if (!(bp > 0)) {
+      return res.status(400).json({ ok: false, error: "buying power unavailable — check RH auth" });
+    }
+
+    var fullPort = require("./utils/fullPort");
+    var result = await fullPort.computeFullPort(ticker, bp, {
+      crossEntry: crossEntry,
+      mirrorSpx: req.body && req.body.mirrorSpx !== false
+    });
+    if (!result.ok) return res.status(400).json(result);
+
+    var s = getState();
+    var spyC = s.contracts.SPY;
+    var iwmC = s.contracts.IWM;
+    var spxC = s.contracts.SPX || s.contracts.SPY;
+
+    if (ticker === "SPY") {
+      spyC = result.contracts;
+      if (result.mirrorSpx !== false) spxC = result.contracts;
+    } else if (ticker === "IWM") {
+      iwmC = result.contracts;
+      if (result.companion && result.companion.SPY) spyC = result.companion.SPY;
+    } else if (ticker === "SPX") {
+      spxC = result.contracts;
+    }
+
+    setContractSize(spyC, iwmC, spxC);
+
+    var cfg = buildTradeConfigPreview(spyC, iwmC, settings.getDTE("SPY"), settings.getDTE("IWM"));
+    res.json({
+      ok: true,
+      ticker: ticker,
+      contracts: getState().contracts,
+      fullPort: result,
+      cross_entry_enabled: crossEntry,
+      config: cfg
+    });
+  } catch (e) {
+    console.log("[FULL_PORT_ERROR]", e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
@@ -357,6 +451,21 @@ app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
     res.json({ ok: true, posted: posted || [] });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/discord/broadcast", authguard.requireSecret, async (req, res) => {
+  try {
+    var body = req.body || {};
+    var content = body.content != null ? String(body.content) : "";
+    if (!content) return res.status(400).json({ ok: false, error: "content required" });
+    var posted = await discord.broadcastRaw(content, {
+      channels: body.channels || req.query.channels || "all",
+      pingEveryone: !!body.pingEveryone || content.indexOf("@everyone") !== -1
+    });
+    res.json({ ok: true, posted: posted || [] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
