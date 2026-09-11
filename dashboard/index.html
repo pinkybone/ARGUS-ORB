@@ -642,8 +642,9 @@
       <div class="deck-head">
         <div>
           <div class="deck-kicker">Buying Power · Live</div>
-          <div class="deck-bp" id="val-buying-power">—</div>
+          <div class="deck-bp" id="val-buying-power" onclick="refreshBuyingPower(true)" style="cursor:pointer" title="Tap to refresh">—</div>
           <div class="deck-bp-sub">Robinhood · limit fills at ask/bid · whole contracts only</div>
+          <div class="deck-bp-sub" id="val-buying-power-asof" style="margin-top:2px;opacity:0.75">—</div>
         </div>
         <div>
           <div class="deck-systems">
@@ -1321,6 +1322,37 @@ async function loadPnL() {
   } catch(e) {}
 }
 
+async function refreshBuyingPower(force) {
+  var bpEl = document.getElementById('val-buying-power');
+  var asofEl = document.getElementById('val-buying-power-asof');
+  if (!bpEl) return null;
+  try {
+    var q = force ? '/api/buying-power?force=1' : '/api/buying-power';
+    var bpRes = await apiFetch(q);
+    var bpData = await bpRes.json();
+    var n = bpData && bpData.buying_power != null ? parseFloat(bpData.buying_power) : NaN;
+    if (!isNaN(n) && n >= 0) {
+      bpEl.textContent = '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      bpEl.title = bpData.cash != null ? ('Cash: $' + parseFloat(bpData.cash).toFixed(2)) : 'Tap to refresh';
+      if (asofEl) {
+        var t = bpData.as_of ? new Date(bpData.as_of) : new Date();
+        asofEl.textContent = 'Updated ' + t.toLocaleTimeString('en-US', { hour12: false }) + ' · tap BP to refresh';
+      }
+      return n;
+    }
+    // Always clear stale numbers when RH returns nothing usable.
+    bpEl.textContent = '—';
+    if (bpData && bpData.error) bpEl.title = String(bpData.error);
+    else if (state && state.auth && state.auth.status !== 'connected') bpEl.title = 'Connect Robinhood first';
+    else bpEl.title = 'Buying power unavailable';
+    if (asofEl) asofEl.textContent = bpData && bpData.error ? String(bpData.error) : 'Unavailable';
+    return null;
+  } catch (e) {
+    if (asofEl) asofEl.textContent = 'Refresh failed — retrying…';
+    return null;
+  }
+}
+
 async function loadState() {
   try {
     const res = await apiFetch('/api/state');
@@ -1329,17 +1361,7 @@ async function loadState() {
     updateSafetyUI(state);
     if (state.auth) updateAuthUI(state.auth);
     try {
-      const bpRes = await apiFetch('/api/buying-power');
-      const bpData = await bpRes.json();
-      const bpEl = document.getElementById('val-buying-power');
-      if (bpEl) {
-        if (bpData.buying_power) {
-          bpEl.textContent = '$' + parseFloat(bpData.buying_power).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-        } else if (state.auth && state.auth.status !== 'connected') {
-          bpEl.textContent = '—';
-          bpEl.title = 'Connect Robinhood first';
-        }
-      }
+      await refreshBuyingPower(false);
     } catch(e) {}
   } catch(e) {
     toast('Could not load dashboard data', 'red');
@@ -1493,6 +1515,7 @@ async function fullPortTicker(ticker) {
     if (ticker === 'SPY') out += ' · SPX mirrored';
     if (ticker === 'IWM' && fp.companion && fp.companion.SPY) out += ' · SPY cross ' + fp.companion.SPY + 'c';
     toast(out);
+    await refreshBuyingPower(true);
     loadState();
   } catch (e) {
     toast(e.message || 'Full port error', 'red');
@@ -1754,6 +1777,7 @@ loadLivePrices();
 loadPnL();
 checkAuth();
 setInterval(loadState, 10000);
+setInterval(function() { refreshBuyingPower(true); }, 15000);
 setInterval(loadLivePrices, 5000);
 setInterval(loadPnL, 10000);
 setInterval(checkAuth, 10000);
