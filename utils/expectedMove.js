@@ -8,7 +8,7 @@ var expiryCal = require("./expiryCalendar");
 
 var ONE_SD_TICKERS = ["SPY", "IWM", "QQQ", "SPXW"];
 var ONE_SD_FACTOR = 1 / 0.85; // straddle ≈ 85% of 1 standard deviation
-var MOVE_PROXY = { SPXW: "SPY" }; // Yahoo ^GSPC options chain unavailable — scale SPY implied move
+var MOVE_PROXY = { SPXW: "SPY", SPX: "SPY" }; // Yahoo ^GSPC options chain unavailable — scale SPY implied move
 
 function sessionLabel(date) {
   var d = date;

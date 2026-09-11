@@ -5,14 +5,14 @@
 // Rules:
 //   • Scale out: sell 10% of the position for every +20% of gain.
 //   • Initial stop: -15% (active before breakeven).
-//   • Breakeven stop activates at +30% (stop floor -> 0% = entry).
+//   • Breakeven stop activates at +20% (stop floor -> 0% = entry).
 //   • Trailing stop: after breakeven, the stop ratchets UP +10% for every +20%
-//     of gain above the +30% breakeven point. It never moves down.
+//     of gain above the +20% breakeven point. It never moves down.
 //   • Stop-out: exit the full remaining position if gain falls to/through the
 //     current stop level.
 
 var INITIAL_STOP_PCT = -15;
-var BREAKEVEN_AT_PCT = 30;
+var BREAKEVEN_AT_PCT = 20;
 var SCALE_STEP_PCT   = 20;    // every +20% gain → sell 10% (strategy spec)
 var SCALE_SELL_FRAC  = 0.10;
 var TRAIL_EVERY_PCT  = 20;    // for every +20% above breakeven ...

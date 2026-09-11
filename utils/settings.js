@@ -10,10 +10,21 @@ var DEFAULTS = {
   dte: { SPY: 1, IWM: 0 },
   trading_enabled: true,
   dual_leg_live: false,
-  cross_entry_enabled: true
+  cross_entry_enabled: true,
+  // Per-ticker live buys (entries/adds). Stops/exits still run when off.
+  buy_enabled: { SPY: true, IWM: true, SPX: true }
 };
 
 function deepDefault() { return JSON.parse(JSON.stringify(DEFAULTS)); }
+
+function normalizeBuyEnabled(map) {
+  map = map || {};
+  return {
+    SPY: map.SPY !== false,
+    IWM: map.IWM !== false,
+    SPX: map.SPX !== false
+  };
+}
 
 function normalize(s) {
   s = s || {};
@@ -23,6 +34,7 @@ function normalize(s) {
   if (typeof s.trading_enabled !== "boolean") s.trading_enabled = DEFAULTS.trading_enabled;
   if (typeof s.dual_leg_live !== "boolean") s.dual_leg_live = DEFAULTS.dual_leg_live;
   if (typeof s.cross_entry_enabled !== "boolean") s.cross_entry_enabled = DEFAULTS.cross_entry_enabled;
+  s.buy_enabled = normalizeBuyEnabled(s.buy_enabled);
   return s;
 }
 
@@ -41,8 +53,10 @@ function save() {
 }
 
 function getDTE(ticker) {
-  var v = settings.dte[ticker];
-  return typeof v === "number" ? v : (ticker === "SPY" ? 1 : 0);
+  var t = String(ticker || "").toUpperCase();
+  if (t === "SPX" || t === "SPXW") t = "SPY";
+  var v = settings.dte[t];
+  return typeof v === "number" ? v : (t === "SPY" ? 1 : 0);
 }
 
 function setDTE(ticker, val) {
@@ -59,6 +73,7 @@ function getAll() {
     trading_enabled: isTradingEnabled(),
     dual_leg_live: isDualLegLive(),
     cross_entry_enabled: isCrossEntryEnabled(),
+    buy_enabled: getBuyEnabled(),
     durable: persist.isDurable()
   };
 }
@@ -93,6 +108,44 @@ function setCrossEntryEnabled(on) {
   return settings.cross_entry_enabled;
 }
 
+function buyTickerKey(ticker) {
+  var t = String(ticker || "").toUpperCase();
+  if (t === "SPXW") t = "SPX";
+  if (t === "SPY" || t === "IWM" || t === "SPX") return t;
+  return null;
+}
+
+function getBuyEnabled() {
+  return normalizeBuyEnabled(settings.buy_enabled);
+}
+
+function isBuyEnabled(ticker) {
+  var key = buyTickerKey(ticker);
+  if (!key) return true;
+  var map = getBuyEnabled();
+  return map[key] !== false;
+}
+
+function setBuyEnabled(ticker, on) {
+  var key = buyTickerKey(ticker);
+  if (!key) return getBuyEnabled();
+  settings.buy_enabled = normalizeBuyEnabled(settings.buy_enabled);
+  settings.buy_enabled[key] = !!on;
+  save();
+  return getBuyEnabled();
+}
+
+function setBuyEnabledMap(map) {
+  var cur = getBuyEnabled();
+  if (!map || typeof map !== "object") return cur;
+  ["SPY", "IWM", "SPX"].forEach(function(t) {
+    if (map[t] !== undefined) cur[t] = !!map[t];
+  });
+  settings.buy_enabled = normalizeBuyEnabled(cur);
+  save();
+  return getBuyEnabled();
+}
+
 module.exports = {
   getDTE: getDTE,
   setDTE: setDTE,
@@ -103,5 +156,9 @@ module.exports = {
   setDualLegLive: setDualLegLive,
   isCrossEntryEnabled: isCrossEntryEnabled,
   setCrossEntryEnabled: setCrossEntryEnabled,
+  getBuyEnabled: getBuyEnabled,
+  isBuyEnabled: isBuyEnabled,
+  setBuyEnabled: setBuyEnabled,
+  setBuyEnabledMap: setBuyEnabledMap,
   FILE: FILE
 };

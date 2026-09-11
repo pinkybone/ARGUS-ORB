@@ -8,7 +8,10 @@ var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
 
 function getDTE(ticker) {
-  return settings.getDTE(ticker);
+  var t = String(ticker || "").toUpperCase();
+  // SPX live mirrors SPY parameters (including DTE).
+  if (t === "SPX" || t === "SPXW") t = "SPY";
+  return settings.getDTE(t);
 }
 
 function getExpiryDate(ticker) {

@@ -407,14 +407,75 @@ function pickRhPosition(open, matchOpts) {
   return open.length === 1 ? open[0] : null;
 }
 
+function isAlreadyFlatError(error) {
+  var msg = (error || "") + "";
+  return /No open position found/i.test(msg) || /No matching open position found/i.test(msg);
+}
+
+async function waitForCloseConfirmation(orderId, instrumentUrl, soldQty, opts) {
+  opts = opts || {};
+  var maxWait = opts.maxWaitMs || 20000;
+  var interval = opts.intervalMs || 500;
+  var deadline = Date.now() + maxWait;
+  var lastState = "";
+  var fillPrice = 0;
+
+  while (Date.now() < deadline) {
+    try {
+      var order = await getOptionOrder(orderId);
+      if (order) {
+        lastState = (order.state || "").toLowerCase();
+        fillPrice = fillPriceFromOrder(order) || fillPrice;
+        if (lastState === "filled") {
+          return { ok: true, fillPrice: fillPrice || 0, state: lastState };
+        }
+        if (lastState === "cancelled" || lastState === "rejected" || lastState === "failed") {
+          break;
+        }
+      }
+    } catch (e) {}
+
+    if (instrumentUrl) {
+      try {
+        var open = await getOpenOptionPositions();
+        var still = open.find(function(p) { return sameOptionUrl(p.option, instrumentUrl); });
+        var qtyLeft = still ? optionPositionQty(still) : 0;
+        if (!still || qtyLeft <= 0) {
+          return { ok: true, fillPrice: fillPrice || 0, state: lastState || "flat", alreadyFlat: true };
+        }
+      } catch (e) {}
+    }
+    await sleep(interval);
+  }
+
+  if (instrumentUrl) {
+    try {
+      var finalOpen = await getOpenOptionPositions();
+      var finalPos = finalOpen.find(function(p) { return sameOptionUrl(p.option, instrumentUrl); });
+      if (!finalPos || optionPositionQty(finalPos) <= 0) {
+        return { ok: true, fillPrice: fillPrice || 0, state: lastState || "flat", alreadyFlat: true };
+      }
+    } catch (e) {}
+  }
+
+  return {
+    ok: false,
+    error: "close_not_confirmed" + (lastState ? " (" + lastState + ")" : ""),
+    state: lastState,
+    fillPrice: fillPrice || 0,
+    soldQty: soldQty
+  };
+}
+
 async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
   const fetched = await fetchOpenOptionPositions();
   if (!fetched.ok) return { ok: false, error: "positions_fetch_failed: " + (fetched.error || "unknown") };
-  const matching = (fetched.positions || []).filter(p => p.chain_symbol === ticker && optionPositionQty(p) > 0);
-  if (!matching.length) return { ok: false, error: "No open position found" };
+  const liveTickers = require("./liveTickers");
+  const matching = (fetched.positions || []).filter(p => liveTickers.matchesChainSymbol(p.chain_symbol, ticker) && optionPositionQty(p) > 0);
+  if (!matching.length) return { ok: false, alreadyFlat: true, error: "No open position found" };
 
   const pos = pickRhPosition(matching, matchOpts);
-  if (!pos) return { ok: false, error: "No matching open position found" };
+  if (!pos) return { ok: false, alreadyFlat: true, error: "No matching open position found" };
 
   // Use the open position's instrument URL directly — re-resolving via expiry/strike
   // can fail on 0DTE same-day contracts even though RH still holds the position.
@@ -444,7 +505,26 @@ async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
 
   console.log(`[CLOSE] ${ticker} selling ${contracts}c — ${reason}`);
   const res = await authedRequest("POST", "/options/orders/", order, "json");
-  if (res.id) return { ok: true, order_id: res.id, contracts, reason };
+  if (res.id) {
+    const confirmed = await waitForCloseConfirmation(res.id, instrumentUrl, contracts, { maxWaitMs: 20000 });
+    if (confirmed.ok) {
+      return {
+        ok: true,
+        order_id: res.id,
+        contracts,
+        reason,
+        fillPrice: confirmed.fillPrice || 0,
+        confirmed: true
+      };
+    }
+    return {
+      ok: false,
+      error: confirmed.error || "close_not_confirmed",
+      order_id: res.id,
+      contracts,
+      reason
+    };
+  }
   console.log("[CLOSE_ERROR]", JSON.stringify(res));
   throw new Error(JSON.stringify(res));
 }
@@ -708,7 +788,7 @@ module.exports = {
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
-  getOptionOrder, waitForFillPrice, fillPriceFromOrder, perShareFromRhPosition,
+  getOptionOrder, waitForFillPrice, waitForCloseConfirmation, fillPriceFromOrder, perShareFromRhPosition,
   getOptionMark, getOptionMarkByUrl, getOpenOptionPositions, fetchOpenOptionPositions,
-  optionPositionQty, sameOptionUrl
+  optionPositionQty, sameOptionUrl, isAlreadyFlatError
 };

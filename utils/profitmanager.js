@@ -13,6 +13,14 @@ var liveTickers = require("./liveTickers");
 
 var lastReconcileMs = 0;
 var RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+var RECONCILE_SOON_MS = 15 * 1000;
+
+function requestReconcileSoon() {
+  // Pull next mid-session reconcile forward (e.g. after a failed close).
+  if (lastReconcileMs <= 0) return;
+  var target = Date.now() - RECONCILE_INTERVAL_MS + RECONCILE_SOON_MS;
+  if (lastReconcileMs > target) lastReconcileMs = target;
+}
 
 async function checkCrossEntryStop(ticker, pos, s) {
   if (!pos.crossEntry || !pos.stopMode || pos.stopMode === "mid") return false;
@@ -283,7 +291,7 @@ async function checkProfitTiers() {
 
     if (decision.activateBreakeven) {
       stateModule.setBreakEven(ticker);
-      stateModule.logEvent("BREAKEVEN", ticker + " +30% — stop moved to breakeven $" + entryPrice.toFixed(2));
+      stateModule.logEvent("BREAKEVEN", ticker + " +20% — stop moved to breakeven $" + entryPrice.toFixed(2));
     }
 
     if (decision.stopOut && !pos.stopped) {
@@ -330,4 +338,8 @@ function startProfitManager() {
   }, 10 * 1000);
 }
 
-module.exports = { startProfitManager: startProfitManager, checkProfitTiers: checkProfitTiers };
+module.exports = {
+  startProfitManager: startProfitManager,
+  checkProfitTiers: checkProfitTiers,
+  requestReconcileSoon: requestReconcileSoon
+};

@@ -31,13 +31,20 @@ async function resolveEntryPrice(instrumentUrl, limitPrice) {
 }
 
 async function placeOrder(opts) {
+  var liveTickers = require("./liveTickers");
+  var chainSymbol = liveTickers.tradeSymbolFor(opts.ticker);
   var expiry = opts.expiry || getExpiry(opts.ticker);
-  var price = await resolveUnderlying(opts.ticker);
-  var strike = opts.strike != null ? Math.round(parseFloat(opts.strike)) : Math.round(price);
+  var price = await resolveUnderlying(opts.ticker === "SPX" || opts.ticker === "SPXW" ? "SPX" : opts.ticker);
+  // Index options strike in $5 increments.
+  var rawStrike = opts.strike != null ? parseFloat(opts.strike) : price;
+  var strike = (chainSymbol === "SPX" || opts.ticker === "SPX" || opts.ticker === "SPXW")
+    ? Math.round(rawStrike / 5) * 5
+    : Math.round(rawStrike);
   if (strike <= 0) throw new Error("Could not resolve underlying price for " + opts.ticker + " — check RH_TOKEN");
-  console.log("[ORDER] " + opts.ticker + " " + opts.side + " x" + opts.contracts +
+  console.log("[ORDER] " + opts.ticker + (chainSymbol !== opts.ticker ? ("→" + chainSymbol) : "") +
+    " " + opts.side + " x" + opts.contracts +
     " strike=" + strike + " expiry=" + expiry + (opts.dteTag != null ? (" dte=" + opts.dteTag) : ""));
-  var result = await rh.placeOptionOrder(opts.ticker, opts.side, opts.contracts, expiry, strike, opts.side);
+  var result = await rh.placeOptionOrder(chainSymbol, opts.side, opts.contracts, expiry, strike, opts.side);
   var entryPrice = 0;
   if (result.order_id) {
     entryPrice = await rh.waitForFillPrice(result.order_id, result.instrumentUrl);
@@ -137,12 +144,29 @@ async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
       match: matchOverride || null
     });
     if (result && result.ok === false) {
+      // RH already flat — treat as success so callers clear ghost state instead of
+      // looping STOP_OUT / ORDER_ERROR every poll until the 10m reconcile grace ends.
+      if (result.alreadyFlat || rh.isAlreadyFlatError(result.error)) {
+        stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
+          + ") — clearing ghost state");
+        try { require("./reconcile").forceFlatNext(ticker); } catch (e) {}
+        return true;
+      }
       stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
+      // Failed close while RH may still hold — reconcile sooner than the 5m cadence.
+      try { require("./profitmanager").requestReconcileSoon(); } catch (e) {}
       return false;
     }
     return true;
   } catch (e) {
+    if (rh.isAlreadyFlatError(e.message)) {
+      stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
+        + ") — clearing ghost state");
+      try { require("./reconcile").forceFlatNext(ticker); } catch (e2) {}
+      return true;
+    }
     stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
+    try { require("./profitmanager").requestReconcileSoon(); } catch (e2) {}
     return false;
   }
 }

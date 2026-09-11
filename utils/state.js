@@ -48,16 +48,22 @@ function restoreOrb(savedOrb) {
 }
 
 function restorePositions(savedPos) {
-  var positions = { SPY: null, IWM: null };
+  var positions = { SPY: null, IWM: null, SPX: null };
   if (!savedPos || _saved.lastReset !== _today) return positions;
-  ["SPY", "IWM"].forEach(function(t) {
+  ["SPY", "IWM", "SPX"].forEach(function(t) {
     if (savedPos[t] && !savedPos[t].stopped) positions[t] = savedPos[t];
   });
   return positions;
 }
 
 let state = {
-  contracts: (_saved && _saved.contracts) ? _saved.contracts : { SPY: 1, IWM: 1 },
+  contracts: (_saved && _saved.contracts)
+    ? {
+        SPY: _saved.contracts.SPY || 1,
+        IWM: _saved.contracts.IWM || 1,
+        SPX: _saved.contracts.SPX != null ? _saved.contracts.SPX : (_saved.contracts.SPY || 1)
+      }
+    : { SPY: 1, IWM: 1, SPX: 1 },
   orb: restoreOrb(_saved && _saved.orb),
   positions: restorePositions(_saved && _saved.positions),
   lastReset: (_saved && _saved.lastReset === _today) ? _saved.lastReset : null,
@@ -71,14 +77,18 @@ function resetDay() {
   if (state.lastReset !== today) {
     var hadPrior = !!state.lastReset;
     state.orb = freshOrb();
-    state.positions = { SPY: null, IWM: null };
+    state.positions = { SPY: null, IWM: null, SPX: null };
     if (hadPrior && process.env.ORB_DAILY_INCREMENT !== "0") {
       state.contracts.SPY = Math.min(100, (state.contracts.SPY || 1) + 1);
       state.contracts.IWM = Math.min(100, (state.contracts.IWM || 1) + 1);
-      logEvent("CONTRACTS", "Daily +1 → SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+      // SPX mirrors SPY sizing params.
+      state.contracts.SPX = state.contracts.SPY;
+      logEvent("CONTRACTS", "Daily +1 → SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM +
+        " SPX=" + state.contracts.SPX);
     }
     state.lastReset = today;
-    logEvent("DAY_RESET", "New day. Contracts SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+    logEvent("DAY_RESET", "New day. Contracts SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM +
+      " SPX=" + (state.contracts.SPX || state.contracts.SPY));
     savePersistedState();
   }
 }
@@ -313,21 +323,31 @@ function applyOrderFill(ticker, order) {
   }
 }
 
-function setContractSize(spy, iwm) {
+function setContractSize(spy, iwm, spx) {
   state.contracts.SPY = Math.min(100, Math.max(1, parseInt(spy, 10) || 1));
   state.contracts.IWM = Math.min(100, Math.max(1, parseInt(iwm, 10) || 1));
+  // SPX uses SPY params by default; explicit spx overrides.
+  if (spx !== undefined && spx !== null && spx !== "") {
+    state.contracts.SPX = Math.min(100, Math.max(1, parseInt(spx, 10) || 1));
+  } else {
+    state.contracts.SPX = state.contracts.SPY;
+  }
   savePersistedState();
-  logEvent("CONTRACTS", "Size updated SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+  logEvent("CONTRACTS", "Size updated SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM +
+    " SPX=" + state.contracts.SPX);
 }
 
 function getTradeSizingFromTotal(total) {
   total = Math.min(100, Math.max(1, parseInt(total, 10) || 1));
-  var half = Math.ceil(total / 2);
+  // Floor half so half + retest == total in whole contracts (never overshoot / fractional).
+  var half = Math.max(1, Math.floor(total / 2));
+  var retest = Math.max(0, total - half);
+  if (retest < 1) retest = half; // 1-lot: retest path still uses whole 1c
   return {
     total: total,
     halfEntry: half,
-    retestAdd: half,
-    fullPosition: half * 2
+    retestAdd: retest,
+    fullPosition: half + (total === 1 ? 0 : Math.max(0, total - half))
   };
 }
 

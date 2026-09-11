@@ -2,16 +2,16 @@
 // Central registry for LIVE Robinhood trading symbols.
 // Discord/paper channels are separate and may include more tickers.
 //
-// Current live: SPY, IWM
-// Next phase: QQQ (+ SPX/SPXW when RH index-options access is confirmed)
+// Current live: SPY, IWM, SPX (SPX mirrors SPY ORB — no SPX webhook)
+// Next phase: QQQ
 
-var LIVE_TICKERS = ["SPY", "IWM"];
+var LIVE_TICKERS = ["SPY", "IWM", "SPX"];
 
 // Planned / gated — enable one-by-one after RH option chain + sizing verified.
-var NEXT_LIVE_TICKERS = ["QQQ", "SPX"];
+var NEXT_LIVE_TICKERS = ["QQQ"];
 
 // Map alert/signal ticker → RH option chain symbol to trade.
-// SPX alerts can trade SPXW (weekly) when available on the account.
+// SPX live mirrors SPY signals; RH index weeklies use SPX chain (SPXW aliases to SPX).
 var LIVE_TRADE_SYMBOL = {
   SPY: "SPY",
   IWM: "IWM",
@@ -38,6 +38,17 @@ function isLiveTicker(ticker) {
   return liveTickers().indexOf(String(ticker || "").toUpperCase()) !== -1;
 }
 
+
+function chainSymbolsFor(ticker) {
+  var t = String(ticker || "").toUpperCase();
+  if (t === "SPX" || t === "SPXW") return ["SPX", "SPXW"];
+  return [t];
+}
+
+function matchesChainSymbol(chainSymbol, ticker) {
+  return chainSymbolsFor(ticker).indexOf(String(chainSymbol || "").toUpperCase()) !== -1;
+}
+
 function tradeSymbolFor(ticker) {
   var t = String(ticker || "").toUpperCase();
   return LIVE_TRADE_SYMBOL[t] || t;
@@ -61,6 +72,8 @@ module.exports = {
   liveTickers: liveTickers,
   isLiveTicker: isLiveTicker,
   tradeSymbolFor: tradeSymbolFor,
+  chainSymbolsFor: chainSymbolsFor,
+  matchesChainSymbol: matchesChainSymbol,
   emptyPositionMap: emptyPositionMap,
   defaultContracts: defaultContracts
 };
