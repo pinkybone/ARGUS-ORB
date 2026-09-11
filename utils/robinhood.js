@@ -719,73 +719,6 @@ async function checkAuthStatus() {
   return result;
 }
 
-// Short-lived account funds cache so the dashboard can poll without hammering RH.
-var _fundsCache = { at: 0, data: null };
-var FUNDS_TTL_MS = 5000;
-
-function pickBuyingPower(account) {
-  if (!account || typeof account !== "object") return null;
-  // Prefer true buying_power (what RH uses for new option buys). Fall back to cash.
-  var candidates = [
-    account.buying_power,
-    account.cash_available_for_withdrawal,
-    account.cash,
-    account.portfolio_cash
-  ];
-  for (var i = 0; i < candidates.length; i++) {
-    var n = parseFloat(candidates[i]);
-    if (!isNaN(n) && n >= 0) return n;
-  }
-  return null;
-}
-
-async function getAccountFunds(opts) {
-  opts = opts || {};
-  var now = Date.now();
-  if (!opts.force && _fundsCache.data && (now - _fundsCache.at) < FUNDS_TTL_MS) {
-    return _fundsCache.data;
-  }
-  if (!_token) {
-    return { ok: false, error: "no_token", buying_power: null, cash: null, as_of: null };
-  }
-  var acct = process.env.RH_ACCOUNT_NUMBER;
-  if (!acct) {
-    return { ok: false, error: "no_account", buying_power: null, cash: null, as_of: null };
-  }
-  var r = await rawRequest("GET", "/accounts/" + acct + "/", null, _token);
-  if (isAuthError(r)) {
-    console.log("[AUTH] Access token rejected on GET /accounts — refreshing and retrying once");
-    var refreshed = await reauthorize();
-    if (!refreshed) {
-      return { ok: false, error: "auth_failed", buying_power: null, cash: null, as_of: null };
-    }
-    r = await rawRequest("GET", "/accounts/" + acct + "/", null, _token);
-    if (isAuthError(r)) {
-      return { ok: false, error: "auth_failed", buying_power: null, cash: null, as_of: null };
-    }
-  }
-  if (r.status < 200 || r.status >= 300) {
-    var detail = (r.body && (r.body.detail || r.body.error)) || ("http_" + r.status);
-    return { ok: false, error: String(detail), buying_power: null, cash: null, as_of: null };
-  }
-  var body = r.body || {};
-  var bp = pickBuyingPower(body);
-  var cash = parseFloat(body.cash);
-  if (isNaN(cash)) cash = null;
-  var data = {
-    ok: true,
-    error: null,
-    buying_power: bp,
-    cash: cash,
-    raw_buying_power: body.buying_power != null ? String(body.buying_power) : null,
-    as_of: new Date().toISOString()
-  };
-  _fundsCache = { at: now, data: data };
-  // Auth is clearly good if account fetch succeeded.
-  _authCache = { at: now, result: { ok: true } };
-  return data;
-}
-
 async function getOpenOptionPositions() {
   var fetched = await fetchOpenOptionPositions();
   return fetched.positions || [];
@@ -851,7 +784,6 @@ function sameOptionUrl(a, b) {
 module.exports = {
   login, setToken, getToken, setDeviceToken, refreshToken, refreshWithStoredTokens,
   getStoredRefreshToken, getStoredDeviceToken, clearAuthSession, reauthorize, checkAuthStatus,
-  getAccountFunds, pickBuyingPower,
   decodeJwtExp, getAccessTokenExpiryMs, needsProactiveRefresh,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
