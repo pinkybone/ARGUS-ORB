@@ -1,7 +1,0 @@
-Exact copy of production live trader
-Repo: d9hv7t7stt-png/Ai-Orb-Trader-SPY-IWM
-Ref: origin/main
-SHA: 23183030bed9c0f53eceb2107fc36e643269d7c9
-Built: 2026-09-11T21:49:12Z
-Railway env: daring-reprieve / production
-This is the full source as deployed (Discord paper + live), not the Whop-stripped customer zip.
