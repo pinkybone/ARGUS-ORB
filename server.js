@@ -63,36 +63,18 @@ app.get("/health", async (req, res) => {
 
 app.get("/api/buying-power", authguard.requireSecret, async (req, res) => {
   try {
-    var bp = null;
-    var token = rh.getToken();
-    var acct = process.env.RH_ACCOUNT_NUMBER;
-    if (token && acct) {
-      var status = await rh.checkAuthStatus();
-      if (status.ok) {
-        var body = await new Promise(function(resolve) {
-          var opts = {
-            hostname: "api.robinhood.com",
-            path: "/accounts/" + acct + "/",
-            headers: {
-              "Authorization": "Bearer " + token,
-              "Accept": "application/json",
-              "X-Robinhood-API-Version": "1.431.4",
-              "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
-            }
-          };
-          var req3 = https.request(opts, (r) => {
-            var raw = ""; r.on("data", c => raw += c);
-            r.on("end", () => { try { resolve(JSON.parse(raw)); } catch (e) { resolve({}); } });
-          });
-          req3.on("error", () => resolve({})); req3.end();
-        });
-        bp = body.buying_power || body.cash || null;
-      }
-    }
-    res.json({ buying_power: bp });
+    var force = String(req.query.force || "") === "1";
+    var funds = await rh.getAccountFunds({ force: force });
+    res.json({
+      buying_power: funds.buying_power,
+      cash: funds.cash,
+      ok: !!funds.ok,
+      error: funds.error || null,
+      as_of: funds.as_of || null
+    });
   } catch (e) {
     console.log("[BUYING_POWER_ERROR]", e.message);
-    res.json({ buying_power: null });
+    res.json({ buying_power: null, cash: null, ok: false, error: e.message, as_of: null });
   }
 });
 
@@ -374,35 +356,14 @@ app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
     }
     var crossEntry = settings.isCrossEntryEnabled();
 
-    var bp = null;
-    var token = rh.getToken();
-    var acct = process.env.RH_ACCOUNT_NUMBER;
-    if (token && acct) {
-      var status = await rh.checkAuthStatus();
-      if (status.ok) {
-        var body = await new Promise(function(resolve) {
-          var opts = {
-            hostname: "api.robinhood.com",
-            path: "/accounts/" + acct + "/",
-            headers: {
-              "Authorization": "Bearer " + token,
-              "Accept": "application/json",
-              "X-Robinhood-API-Version": "1.431.4",
-              "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
-            }
-          };
-          var req3 = https.request(opts, function(r) {
-            var raw = ""; r.on("data", function(c) { raw += c; });
-            r.on("end", function() { try { resolve(JSON.parse(raw)); } catch (e) { resolve({}); } });
-          });
-          req3.on("error", function() { resolve({}); });
-          req3.end();
-        });
-        bp = parseFloat(body.buying_power || body.cash || 0) || null;
-      }
-    }
+    var funds = await rh.getAccountFunds({ force: true });
+    var bp = funds && funds.buying_power != null ? parseFloat(funds.buying_power) : NaN;
     if (!(bp > 0)) {
-      return res.status(400).json({ ok: false, error: "buying power unavailable — check RH auth" });
+      return res.status(400).json({
+        ok: false,
+        error: "buying power unavailable — check RH auth",
+        detail: funds && funds.error ? funds.error : null
+      });
     }
 
     var fullPort = require("./utils/fullPort");
