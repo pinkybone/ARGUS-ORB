@@ -24,13 +24,15 @@ function test(name, fn) {
 }
 
 console.log("paperLegs");
-test("5% / 2.5% per leg floors contracts", function() {
-  // $50k * 5% * 50% = $1,250 / ($2.50 * 100) = 5 contracts
+test("20% / 10% per leg floors contracts", function() {
+  // $50k * 20% * 50% = $5,000 / ($2.50 * 100) = 20 contracts
+  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 2.50), 20);
+  // $10k * 10% = $1,000 / ($3 * 100) = 3
+  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 3.00), 3);
+  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 1.00), 10);
+  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 0), 0);
+  // legacy 5% math still works in the helper
   assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 2.50), 5);
-  // $10k * 2.5% = $250 / ($3 * 100) = 0 (too expensive)
-  assert.strictEqual(paperLegs.sizeContracts(10000, 5, 0.5, 3.00), 0);
-  assert.strictEqual(paperLegs.sizeContracts(10000, 5, 0.5, 1.00), 2);
-  assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 0), 0);
 });
 
 test("SPXW strikes round to $5; equity to $1", function() {
@@ -92,12 +94,14 @@ test("scale-out at +20%, not at +19%", function() {
   assert.strictEqual(b.scaleOut, false);
 });
 
-test("breakeven at +30% then trail +10% per +20%", function() {
-  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.60);
+test("breakeven at +20% then trail +10% per +20%", function() {
+  var early = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 2.38);
+  assert.strictEqual(early.activateBreakeven, false);
+  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.40);
   assert.ok(be.activateBreakeven);
   assert.strictEqual(be.newStopPct, 0);
-  var trail = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 2, breakEvenActivated: true, stopPct: 0 }, 3.00);
-  // +50% → one 20% step above +30% → trail stop 10%
+  var trail = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 2, breakEvenActivated: true, stopPct: 0 }, 2.80);
+  // +40% → one 20% step above +20% → trail stop 10%
   assert.strictEqual(trail.newStopPct, 10);
 });
 
@@ -147,6 +151,19 @@ test("findRhPosition matches pending qty and URL slash variants", function() {
 test("reconcile grace is at least 10 minutes", function() {
   assert.ok(reconcile.RH_FLAT_GRACE_MS >= 10 * 60 * 1000);
   assert.ok(reconcile.FLAT_CONFIRM_NEEDED >= 2);
+});
+
+test("already-flat close errors are detected", function() {
+  assert.ok(rh.isAlreadyFlatError("No open position found"));
+  assert.ok(rh.isAlreadyFlatError("No matching open position found"));
+  assert.ok(rh.isAlreadyFlatError("Error: No open position found"));
+  assert.strictEqual(rh.isAlreadyFlatError("positions_fetch_failed: timeout"), false);
+  assert.strictEqual(rh.isAlreadyFlatError("close_not_confirmed (cancelled)"), false);
+});
+
+test("forceFlatNext is exported for ghost close path", function() {
+  assert.strictEqual(typeof reconcile.forceFlatNext, "function");
+  reconcile.forceFlatNext("SPY");
 });
 
 console.log("calendar / expiry");
@@ -220,9 +237,9 @@ test("grok secret falls back to WEBHOOK_SECRET", function() {
 test("trade sizing preview matches live half+half", function() {
   var state = require("../utils/state");
   var sz = state.getTradeSizingFromTotal(7);
-  assert.strictEqual(sz.halfEntry, 4);
+  assert.strictEqual(sz.halfEntry, 3);
   assert.strictEqual(sz.retestAdd, 4);
-  assert.strictEqual(sz.fullPosition, 8);
+  assert.strictEqual(sz.fullPosition, 7);
   var from1 = state.getTradeSizingFromTotal(1);
   assert.strictEqual(from1.halfEntry, 1);
   assert.strictEqual(from1.retestAdd, 1);
@@ -390,6 +407,39 @@ test("cross_entry_enabled defaults true and persists", function() {
   assert.strictEqual(settings.isCrossEntryEnabled(), true);
   var all = settings.getAll();
   assert.strictEqual(all.cross_entry_enabled, true);
+});
+
+test("buy_enabled defaults true per ticker and persists", function() {
+  var settings = require("../utils/settings");
+  var allOn = settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
+  assert.strictEqual(allOn.SPY, true);
+  assert.strictEqual(allOn.IWM, true);
+  assert.strictEqual(allOn.SPX, true);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), true);
+
+  settings.setBuyEnabled("IWM", false);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+
+  settings.setBuyEnabled("SPX", false);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), false);
+
+  var map = settings.setBuyEnabledMap({ SPY: false, IWM: true });
+  assert.strictEqual(map.SPY, false);
+  assert.strictEqual(map.IWM, true);
+  assert.strictEqual(map.SPX, false);
+
+  var all = settings.getAll();
+  assert.strictEqual(all.buy_enabled.SPY, false);
+  assert.strictEqual(all.buy_enabled.IWM, true);
+  assert.strictEqual(all.buy_enabled.SPX, false);
+
+  settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
 });
 
 test("Whop license key format accepts dash-separated uppercase", function() {
@@ -748,8 +798,109 @@ test("daily summary splits busy sessions across multiple Discord messages", func
   assert.strictEqual((joined.match(/SPXW/g) || []).length, 30);
 });
 
-if (process.exitCode) {
-  console.error("\nAUDIT TESTS FAILED");
-  process.exit(1);
-}
-console.log("\n" + passed + " tests passed");
+console.log("ghost close");
+var ghostClosePromise = (async function() {
+  var trayd = require("../utils/trayd");
+  var stateModule = require("../utils/state");
+  var origClose = rh.closeOptionPosition;
+
+  function run(name, fn) {
+    return Promise.resolve()
+      .then(fn)
+      .then(function() {
+        passed++;
+        console.log("  ok  " + name);
+      })
+      .catch(function(e) {
+        console.error("  FAIL  " + name + " — " + e.message);
+        process.exitCode = 1;
+      });
+  }
+
+  await run("closeLiveOrLog returns true when RH already flat", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: false, alreadyFlat: true, error: "No open position found" };
+    };
+    var ok = await trayd.closeLiveOrLog("IWM", 1, "Initial stop -15%");
+    assert.strictEqual(ok, true);
+  });
+
+  await run("closeLiveOrLog returns false when close is not confirmed", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: false, error: "close_not_confirmed (cancelled)", order_id: "abc" };
+    };
+    var ok = await trayd.closeLiveOrLog("IWM", 1, "Trailing stop -5%");
+    assert.strictEqual(ok, false);
+  });
+
+  await run("closeLiveOrLog returns true only after confirmed fill", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: true, order_id: "xyz", contracts: 1, confirmed: true, fillPrice: 0.42 };
+    };
+    var ok = await trayd.closeLiveOrLog("SPY", 1, "scale-out");
+    assert.strictEqual(ok, true);
+  });
+
+  rh.closeOptionPosition = origClose;
+  // silence unused in case state import is tree-shaken mentally
+  void stateModule;
+})();
+
+ghostClosePromise.then(function() {
+  if (process.exitCode) {
+    console.error("\nAUDIT TESTS FAILED");
+    process.exit(1);
+  }
+  console.log("\n" + passed + " tests passed");
+});
+
+
+console.log("fullPort + SPX live");
+test("fullPort contractsFromBuyingPower max whole contracts, never fractional", function() {
+  var fullPort = require("../utils/fullPort");
+  // With 5% premium pad + 98.5% BP util, size is conservative whole contracts.
+  var n = fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: false, premiumPad: 1, bpUtilization: 1 });
+  assert.strictEqual(n, 40);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: true, premiumPad: 1, bpUtilization: 1 }), 20);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(100, 2.5, { dualLeg: false }), 0);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(250000, 1.0, { dualLeg: false, premiumPad: 1, bpUtilization: 1 }), 100);
+  // Odd leftovers are dropped — never fractional.
+  assert.strictEqual(fullPort.preferEvenContracts(41), 40);
+  assert.strictEqual(fullPort.wholeContracts(3.9), 3);
+  // Padded sizing still returns whole contracts only.
+  var padded = fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: false });
+  assert.ok(padded >= 1 && padded <= 40);
+  assert.strictEqual(padded % 1, 0);
+  assert.strictEqual(padded % 2, 0);
+});
+
+test("SPX is a live ticker and trades SPX chain", function() {
+  var liveTickers = require("../utils/liveTickers");
+  assert.ok(liveTickers.isLiveTicker("SPX"));
+  assert.strictEqual(liveTickers.tradeSymbolFor("SPX"), "SPX");
+  assert.strictEqual(liveTickers.tradeSymbolFor("SPXW"), "SPX");
+  assert.deepStrictEqual(liveTickers.chainSymbolsFor("SPX"), ["SPX", "SPXW"]);
+  assert.ok(liveTickers.matchesChainSymbol("SPXW", "SPX"));
+});
+
+test("SPX DTE and contract size mirror SPY", function() {
+  var expiry = require("../utils/expiry");
+  var settings = require("../utils/settings");
+  var state = require("../utils/state");
+  settings.setDTE("SPY", 1);
+  assert.strictEqual(expiry.getDTE("SPX"), 1);
+  assert.strictEqual(settings.getDTE("SPX"), 1);
+  state.setContractSize(7, 3);
+  assert.strictEqual(state.getState().contracts.SPY, 7);
+  assert.strictEqual(state.getState().contracts.IWM, 3);
+  assert.strictEqual(state.getState().contracts.SPX, 7);
+  state.setContractSize(2, 2, 5);
+  assert.strictEqual(state.getState().contracts.SPX, 5);
+});
+
+test("breakeven still activates at +20%", function() {
+  var exitlogic = require("../utils/exitlogic");
+  assert.strictEqual(exitlogic.BREAKEVEN_AT_PCT, 20);
+  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.40);
+  assert.ok(be.activateBreakeven);
+});
