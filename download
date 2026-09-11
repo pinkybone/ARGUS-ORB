@@ -1,5 +1,0 @@
-node_modules/
-.env
-*.log
-/opt/cursor/artifacts/
-customer-release/
