@@ -58,9 +58,15 @@ async function closeLiveOrLog(ticker, contracts, reason) {
 }
 
 function liveEntryBlocked(ticker, action) {
-  if (settings.isTradingEnabled()) return false;
-  stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
-  return true;
+  if (!settings.isTradingEnabled()) {
+    stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
+    return true;
+  }
+  if (!settings.isBuyEnabled(ticker)) {
+    stateModule.logEvent("BUY_OFF", ticker + " live " + action + " blocked — buy toggle OFF");
+    return true;
+  }
+  return false;
 }
 
 function isRetryableRhError(msg) {
@@ -96,6 +102,66 @@ function recentlySeen(ticker, event) {
 
 function isLiveTicker(ticker) {
   return require("../utils/liveTickers").isLiveTicker(ticker);
+}
+
+
+// SPX live mirrors SPY signals (same side/sizing params). No TradingView SPX webhook —
+// SPY ORB breakouts/stops/retests drive SPX live entries using SPY contract size.
+async function mirrorSpyLiveToSpx(kind, side, opts) {
+  opts = opts || {};
+  if (!isLiveTicker("SPX")) return null;
+  var s = stateModule.getState();
+  var total = s.contracts.SPX || s.contracts.SPY || 1;
+  var half = Math.ceil(total / 2);
+  var spxPos = stateModule.getPosition("SPX");
+
+  try {
+    if (kind === "entry") {
+      if (spxPos && !spxPos.stopped) {
+        stateModule.logEvent("SPX_MIRROR", "SPY " + side + " entry — SPX already open, skip");
+        return null;
+      }
+      if (liveEntryBlocked("SPX", "spy-mirror entry")) return null;
+      stateModule.logEvent("SPX_MIRROR", "SPY " + side + " → SPX live half=" + half + "/" + total + " (SPY ORB signal)");
+      return await tryLiveHalfEntry("SPX", side, half, total, null);
+    }
+
+    if (kind === "retest") {
+      if (!spxPos || spxPos.stopped || spxPos.side !== side || !spxPos.halfIn) return null;
+      if (liveEntryBlocked("SPX", "spy-mirror retest")) return null;
+      stateModule.logEvent("SPX_MIRROR", "SPY retest → SPX add " + spxPos.totalContracts + "c");
+      return await tryLiveRetestAdd("SPX", side, spxPos.totalContracts, spxPos);
+    }
+
+    if (kind === "stop" || kind === "flip_close") {
+      if (!spxPos || spxPos.stopped) return null;
+      var reason = opts.reason || ("SPY " + kind + " → SPX close");
+      stateModule.logEvent("SPX_MIRROR", reason);
+      var closed = await closeLiveOrLog("SPX", spxPos.contracts, reason);
+      if (closed) stateModule.closePosition("SPX", reason);
+      return { closed: closed };
+    }
+
+    if (kind === "expected_move") {
+      if (!spxPos || spxPos.stopped) return null;
+      if ((spxPos.lastProfitTier || 0) >= 300) return null;
+      var qty90 = Math.floor(spxPos.contracts * 0.9);
+      if (qty90 < 1) return null;
+      var emReason = (opts.timeframe || "daily") + " expected move 90% exit (SPY mirror)";
+      var ok = await trayd.closeLiveOrLog("SPX", qty90, emReason);
+      if (ok) {
+        stateModule.reduceContracts("SPX", qty90);
+        stateModule.markProfitTier("SPX", 300);
+        spxPos = stateModule.getPosition("SPX");
+        if (!spxPos || spxPos.contracts <= 0) stateModule.closePosition("SPX", emReason);
+      }
+      return { closed: ok };
+    }
+  } catch (e) {
+    stateModule.logEvent("SPX_MIRROR_ERROR", "SPY→SPX " + kind + " failed: " + e.message);
+    return { error: e.message, retryable: isRetryableRhError(e.message) };
+  }
+  return null;
 }
 
 async function handleAlert(payload) {
@@ -245,14 +311,19 @@ async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice,
       { channelIds: ["spy0dte"], ignoreWebhookPrice: true });
     cross = await tryIwmCrossEntry(side, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, s, lockedTickers);
   }
-  var retryable = !!(entryResult.retryable || (cross && cross.retryable));
+  var spxMirror = null;
+  if (ticker === "SPY" && entryResult.order) {
+    spxMirror = await mirrorSpyLiveToSpx("entry", side);
+  }
+  var retryable = !!(entryResult.retryable || (cross && cross.retryable) || (spxMirror && spxMirror.retryable));
   return {
     order: entryResult.order,
     cross: cross && cross.order,
+    spx: spxMirror && (spxMirror.order || spxMirror),
     paper: true,
     live: !!entryResult.order,
     retryable: retryable,
-    error: entryResult.error || (cross && cross.error)
+    error: entryResult.error || (cross && cross.error) || (spxMirror && spxMirror.error)
   };
 }
 
@@ -330,6 +401,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       if (optPrice) pnlUtil.logTradePnL(ticker, stopSide, stopEntry, optPrice, stopQty);
       stateModule.closePosition(ticker, slLive);
     }
+    if (ticker === "SPY") {
+      await mirrorSpyLiveToSpx("stop", wantSide, { reason: "SPY stop → SPX close (" + slLive + ")" });
+    }
     return {
       ok: true,
       message: ticker + (wantSide === "call" ? " long" : " short") + " paper stopped" +
@@ -348,6 +422,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
         stateModule.closePosition(ticker, "flip to long");
         pos = null;
+        if (ticker === "SPY") {
+          await mirrorSpyLiveToSpx("flip_close", "put", { reason: "SPY flip to long → SPX close" });
+        }
       }
     }
 
@@ -359,6 +436,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         if (!liveEntryBlocked(ticker, "retest")) {
           try {
             await tryLiveRetestAdd(ticker, "call", pos.totalContracts, pos);
+            if (ticker === "SPY") await mirrorSpyLiveToSpx("retest", "call");
           } catch (e) {
             stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
             if (isRetryableRhError(e.message)) {
@@ -389,6 +467,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
         stateModule.closePosition(ticker, "flip to short");
         pos = null;
+        if (ticker === "SPY") {
+          await mirrorSpyLiveToSpx("flip_close", "call", { reason: "SPY flip to short → SPX close" });
+        }
       }
     }
 
@@ -400,6 +481,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         if (!liveEntryBlocked(ticker, "retest")) {
           try {
             await tryLiveRetestAdd(ticker, "put", pos.totalContracts, pos);
+            if (ticker === "SPY") await mirrorSpyLiveToSpx("retest", "put");
           } catch (e) {
             stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
             if (isRetryableRhError(e.message)) {
@@ -442,6 +524,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       stateModule.markProfitTier(ticker, 300);
       pos = stateModule.getPosition(ticker);
       if (!pos || pos.contracts <= 0) stateModule.closePosition(ticker, timeframe + " expected move 90% exit");
+      if (ticker === "SPY") {
+        await mirrorSpyLiveToSpx("expected_move", null, { timeframe: timeframe });
+      }
     }
     return {
       ok: true,
