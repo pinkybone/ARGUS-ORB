@@ -1,0 +1,10 @@
+{
+  "company": "TRADING CHEAT CODES",
+  "companyId": "biz_WtV0OPGXfsal8r",
+  "products": [
+    { "name": "AI Orb Trader Pro - Monthly", "id": "prod_qp6ewBBRjFpze" },
+    { "name": "AI Orb Trader Pro - Quarterly", "id": "prod_yRonAi2q3pr17" },
+    { "name": "AI Orb Trader Pro - Bi-Annual", "id": "prod_Waf5KonDMGcc1" },
+    { "name": "AI Orb Trader Pro - Yearly", "id": "prod_ffd2vAuWFMXaN" }
+  ]
+}
